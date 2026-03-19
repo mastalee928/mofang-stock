@@ -179,7 +179,7 @@ async function editMessageText(chatId, messageId, message, inlineKeyboard) {
   if (!data.ok) throw new Error(data.description || `Telegram ${res.status}`);
 }
 
-async function sendStockLevel1(chatId, messageId, data) {
+async function sendStockLevel1(chatId, messageId, data, replyToId) {
   const { level1Order, tree } = data;
   const parts = [
     NOTIFY_HEADER.trim() ? `<b>${NOTIFY_HEADER}</b>` : '',
@@ -191,10 +191,10 @@ async function sendStockLevel1(chatId, messageId, data) {
     ? [level1Order.map((name) => ({ text: name, callback_data: `L1:${name}` })), [{ text: '◀ 返回', callback_data: 'back:L0' }]]
     : [];
   if (messageId) await editMessageText(chatId, messageId, text, keyboard);
-  else await sendReply(chatId, text, keyboard);
+  else await sendReply(chatId, text, keyboard, replyToId);
 }
 
-async function sendStockLevel2(chatId, messageId, data, level1) {
+async function sendStockLevel2(chatId, messageId, data, level1, replyToId) {
   const { level2Order, tree } = data;
   const order = level2Order[level1] || [];
   const sub = tree[level1] || {};
@@ -208,10 +208,10 @@ async function sendStockLevel2(chatId, messageId, data, level1) {
   const keyboard = buttons.length ? buttons.map((b) => [b]) : [];
   keyboard.push([{ text: '◀ 返回', callback_data: 'back:L1' }]);
   if (messageId) await editMessageText(chatId, messageId, text, keyboard);
-  else await sendReply(chatId, text, keyboard);
+  else await sendReply(chatId, text, keyboard, replyToId);
 }
 
-async function sendStockProducts(chatId, messageId, data, level1, level2) {
+async function sendStockProducts(chatId, messageId, data, level1, level2, replyToId) {
   const { tree } = data;
   const products = tree[level1]?.[level2] || [];
   const parts = [
@@ -223,14 +223,14 @@ async function sendStockProducts(chatId, messageId, data, level1, level2) {
     const text = header + `该分类下暂无可用库存。`;
     const keyboard = [[{ text: '◀ 返回', callback_data: `back:L2:${level1}` }]];
     if (messageId) await editMessageText(chatId, messageId, text, keyboard);
-    else await sendReply(chatId, text, keyboard);
+    else await sendReply(chatId, text, keyboard, replyToId);
     return;
   }
   const rows = buildProductRows(products);
   rows.push([{ text: '◀ 返回', callback_data: `back:L2:${level1}` }]);
   const text = header + `${level1} · ${level2}\n共 ${products.length} 个有库存，点击跳转购买：`;
   if (messageId) await editMessageText(chatId, messageId, text, rows);
-  else await sendReply(chatId, text, rows);
+  else await sendReply(chatId, text, rows, replyToId);
 }
 
 function isStockCommand(text) {
@@ -244,6 +244,7 @@ async function processUpdate(update, data) {
   const chatId = update.message?.chat?.id ?? update.channel_post?.chat?.id ?? callback?.message?.chat?.id;
   const messageId = callback?.message?.message_id;
   const text = update.message?.text ?? update.channel_post?.text ?? callback?.data;
+  const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
 
   if (!chatId) return;
 
@@ -258,23 +259,23 @@ async function processUpdate(update, data) {
       return;
     }
     if (d === 'back:L1') {
-      await sendStockLevel1(chatId, messageId, data);
+      await sendStockLevel1(chatId, messageId, data, replyToId);
       return;
     }
     if (d.startsWith('back:L2:')) {
       const level1 = d.slice(8); // "back:L2:OCI" -> "OCI"
-      await sendStockLevel2(chatId, messageId, data, level1);
+      await sendStockLevel2(chatId, messageId, data, level1, replyToId);
       return;
     }
     if (d.startsWith('L1:')) {
-      await sendStockLevel2(chatId, messageId, data, d.slice(3));
+      await sendStockLevel2(chatId, messageId, data, d.slice(3), replyToId);
       return;
     }
     if (d.startsWith('L2:')) {
       const parts = d.split(':');
       const level1 = parts[1];
       const level2 = parts.slice(2).join(':'); // 二级名称可能含 :
-      await sendStockProducts(chatId, messageId, data, level1, level2);
+      await sendStockProducts(chatId, messageId, data, level1, level2, replyToId);
       return;
     }
   }
@@ -297,7 +298,6 @@ async function processUpdate(update, data) {
   if (msgText && DEDICATED_TRIGGERS.some((phrase) => normalized.includes(phrase))) {
     const dedicated = (data.tree && data.tree['独享机器']) || {};
     const hasStock = Object.values(dedicated).some((arr) => Array.isArray(arr) && arr.length > 0);
-    const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
     await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看', undefined, replyToId);
     return;
   }
@@ -309,7 +309,6 @@ async function processUpdate(update, data) {
         displayName = new URL(WEBSSH_URL).hostname;
       } catch (_) {}
       const linkHtml = `👉<b><a href="${escapeHtml(WEBSSH_URL)}">${escapeHtml(displayName)}</a></b>👈带文件管理的在线SSH工具`;
-      const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
       console.log('[mofang-notice] 触发 webssh 回复, chatId=', chatId);
       await sendReply(chatId, linkHtml, undefined, replyToId);
     } catch (e) {
@@ -328,7 +327,7 @@ async function processUpdate(update, data) {
         }
       })();
       const linkHtml = `OCI官网是👉<b><a href="${escapeHtml(SITE_URL)}">${escapeHtml(displayName)}</a></b>👈`;
-      await sendReply(chatId, linkHtml);
+      await sendReply(chatId, linkHtml, undefined, replyToId);
     } catch (e) {
       console.error('[mofang-notice] 主页/官网回复失败', e.message);
     }
@@ -342,11 +341,11 @@ async function processUpdate(update, data) {
         data = await fetchAndBuildTree();
         setCachedTree(data);
       }
-      await sendStockLevel1(chatId, messageId, data);
+      await sendStockLevel1(chatId, messageId, data, replyToId);
     } catch (e) {
       console.error('[mofang-notice] 回复失败', e.message);
       try {
-        await sendReply(chatId, `拉取失败：${e.message}`);
+        await sendReply(chatId, `拉取失败：${e.message}`, undefined, replyToId);
       } catch (_) {}
     }
   }
