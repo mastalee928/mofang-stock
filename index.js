@@ -281,10 +281,12 @@ async function sendStockProducts(chatId, messageId, data, level1, level2, replyT
   else await sendReply(chatId, text, rows, replyToId);
 }
 
+/** 仅这三类触发库存菜单：/stock（及 /stock@bot）、纯文本 库存、纯文本 stock，避免与 nmBot 的 /库存 冲突 */
 function isStockCommand(text) {
   if (!text || typeof text !== 'string') return false;
-  const t = text.trim().toLowerCase();
-  return t === '/stock' || t === '/库存' || t === '/start' || t.startsWith('/stock@') || t.startsWith('/库存@');
+  const t = text.trim();
+  const tl = t.toLowerCase();
+  return t === '/stock' || tl === 'stock' || t === '库存' || tl.startsWith('/stock@');
 }
 
 async function processUpdate(update, data) {
@@ -312,7 +314,7 @@ async function processUpdate(update, data) {
     if (d === 'back:L0') {
       const parts = [NOTIFY_HEADER.trim() ? `<b>${NOTIFY_HEADER}</b>` : '', NOTIFY_SUBTITLE.trim()].filter((s) => String(s).trim() !== '');
       const header = parts.length ? parts.join('\n\n') + '\n\n' : '';
-      await editMessageText(chatId, messageId, header + '发送 /stock 或 /库存 查看有库存商品。', []);
+      await editMessageText(chatId, messageId, header + '发送 /stock、库存 或 stock 查看有库存商品。', []);
       return;
     }
     if (d === 'back:L1') {
