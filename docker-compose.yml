@@ -1,0 +1,14 @@
+# 魔方财务购物车库存通知 -> Telegram
+# 在 mofang-notice 目录执行: cp .env.example .env 并填写后 docker compose up -d
+
+services:
+  mofang-notice:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: mofang-notice:latest
+    container_name: mofang-notice
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
