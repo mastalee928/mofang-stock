@@ -7,8 +7,38 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const NOTIFY_HEADER = process.env.NOTIFY_HEADER || '魔方库存';
 const NOTIFY_SUBTITLE = process.env.NOTIFY_SUBTITLE || '';
 const CACHE_TTL_SECONDS = Math.max(30, Number(process.env.CACHE_TTL_SECONDS) || 60);
+const STOCK_ASKER_TTL_MS = Math.max(60, Number(process.env.STOCK_ASKER_TTL_SECONDS) || 3600) * 1000;
+const STOCK_ASKER_MAX_SIZE = Math.max(100, Number(process.env.STOCK_ASKER_MAX_SIZE) || 2000);
 
 let treeCache = { data: null, expiresAt: 0 };
+/** 群组内 /stock 键盘：key = `${chatId}:${messageId}`, value = { userId, at }，带 TTL 与容量上限 */
+const stockAskerMap = new Map();
+
+function getStockAsker(key) {
+  const v = stockAskerMap.get(key);
+  if (!v) return undefined;
+  if (Date.now() - v.at > STOCK_ASKER_TTL_MS) {
+    stockAskerMap.delete(key);
+    return undefined;
+  }
+  return v.userId;
+}
+
+function setStockAsker(key, userId) {
+  if (stockAskerMap.size >= STOCK_ASKER_MAX_SIZE) {
+    for (const k of stockAskerMap.keys()) {
+      const entry = stockAskerMap.get(k);
+      if (Date.now() - entry.at > STOCK_ASKER_TTL_MS) stockAskerMap.delete(k);
+    }
+    while (stockAskerMap.size >= STOCK_ASKER_MAX_SIZE) {
+      const first = stockAskerMap.keys().next().value;
+      if (first == null) break;
+      stockAskerMap.delete(first);
+    }
+  }
+  stockAskerMap.set(key, { userId, at: Date.now() });
+}
+
 function getCachedTree() {
   if (treeCache.data && Date.now() < treeCache.expiresAt) return treeCache.data;
   return null;
@@ -147,14 +177,16 @@ async function sendReply(chatId, message, inlineKeyboard, replyToMessageId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!data.ok) throw new Error(data.description || `Telegram ${res.status}`);
+  return data.result;
 }
 
-async function answerCallbackQuery(callbackQueryId) {
+async function answerCallbackQuery(callbackQueryId, options = {}) {
   const u = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/answerCallbackQuery`;
+  const body = { callback_query_id: callbackQueryId, ...options };
   await fetch(u, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -191,7 +223,10 @@ async function sendStockLevel1(chatId, messageId, data, replyToId) {
     ? [level1Order.map((name) => ({ text: name, callback_data: `L1:${name}` })), [{ text: '◀ 返回', callback_data: 'back:L0' }]]
     : [];
   if (messageId) await editMessageText(chatId, messageId, text, keyboard);
-  else await sendReply(chatId, text, keyboard, replyToId);
+  else {
+    const sent = await sendReply(chatId, text, keyboard, replyToId);
+    return sent?.message_id;
+  }
 }
 
 async function sendStockLevel2(chatId, messageId, data, level1, replyToId) {
@@ -247,6 +282,15 @@ async function processUpdate(update, data) {
   const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
 
   if (!chatId) return;
+
+  if (callback?.data) {
+    const key = `${chatId}:${messageId}`;
+    const askerUserId = getStockAsker(key);
+    if (askerUserId != null && callback.from.id !== askerUserId) {
+      await answerCallbackQuery(callback.id, { show_alert: true, text: '仅限发起人操作' });
+      return;
+    }
+  }
 
   if (callback) await answerCallbackQuery(callback.id);
 
@@ -341,7 +385,9 @@ async function processUpdate(update, data) {
         data = await fetchAndBuildTree();
         setCachedTree(data);
       }
-      await sendStockLevel1(chatId, messageId, data, replyToId);
+      const sentMessageId = await sendStockLevel1(chatId, messageId, data, replyToId);
+      const askerUserId = update.message?.from?.id ?? update.channel_post?.from?.id;
+      if (sentMessageId != null && askerUserId != null) setStockAsker(`${chatId}:${sentMessageId}`, askerUserId);
     } catch (e) {
       console.error('[mofang-notice] 回复失败', e.message);
       try {
