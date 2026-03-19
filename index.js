@@ -366,6 +366,21 @@ async function processUpdate(update, data) {
 
   const msgText = (update.message?.text || update.channel_post?.text || '').trim();
 
+  if (/^\/help(@\w+)?\s*$/i.test(msgText)) {
+    const helpText = [
+      '<b>可用指令</b>',
+      '• <code>/stock</code> — 查看有库存商品（也可发纯文本 <code>库存</code> 或 <code>stock</code>）',
+      '• <code>/say 内容</code> — 私聊代发到群（仅管理员，需配置）',
+      '',
+      '<b>关键词回复</b>',
+      '• 发 <code>主页</code> 或 <code>官网</code> → 站点链接',
+      '• 消息含 <code>webssh</code> → WebSSH 链接',
+      '• 问独享相关 → 有/没有 + 提示发 库存 查看',
+    ].join('\n');
+    await sendReply(chatId, helpText, undefined, replyToId);
+    return;
+  }
+
   /** 代发仅允许私聊，避免在群里发 /say 被所有人看到指令和内容 */
   if (ANNOUNCE_CHAT_ID && update.message?.from?.id && ADMIN_IDS.has(update.message.from.id)) {
     const sayMatch = msgText.match(/^\/(say|发群)(@\w+)?\s*([\s\S]*)$/);
@@ -537,6 +552,23 @@ async function longPoll() {
   }
 }
 
+/** 设置 Bot 命令列表，用户输入 / 时会在输入框上方显示这些指令提示 */
+async function setBotCommands() {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands`;
+  const commands = [
+    { command: 'help', description: '查看本 bot 可用指令与触发词' },
+    { command: 'stock', description: '查看有库存商品（也可发 库存 或 stock）' },
+    { command: 'say', description: '私聊代发到群（仅管理员）' },
+  ];
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commands }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) console.warn('[mofang-notice] setMyCommands', data.description || res.status);
+}
+
 async function main() {
   if (process.argv.includes('--once')) {
     const chatId = process.env.TEST_CHAT_ID || '';
@@ -552,6 +584,11 @@ async function main() {
   if (!TELEGRAM_BOT_TOKEN) {
     console.error('[mofang-notice] 请设置 TELEGRAM_BOT_TOKEN');
     process.exit(1);
+  }
+  try {
+    await setBotCommands();
+  } catch (e) {
+    console.warn('[mofang-notice] setMyCommands 失败', e.message);
   }
   console.log('[mofang-notice] Bot 已启动：/stock → 一级/二级/商品均从站点 /cart 解析，顺序与站点一致。CART=', CART_URL);
   await longPoll();
