@@ -270,6 +270,24 @@ async function processUpdate(update, data) {
     }
   }
 
+  const msgText = (update.message?.text || '').trim();
+  if (msgText === '主页' || msgText === '官网') {
+    try {
+      const displayName = (() => {
+        try {
+          return new URL(SITE_URL).hostname;
+        } catch (_) {
+          return '官网';
+        }
+      })();
+      const linkHtml = `OCI官网是👉<b><a href="${escapeHtml(SITE_URL)}">${escapeHtml(displayName)}</a></b>👈`;
+      await sendReply(chatId, linkHtml);
+    } catch (e) {
+      console.error('[mofang-notice] 主页/官网回复失败', e.message);
+    }
+    return;
+  }
+
   if (isStockCommand(text)) {
     try {
       const freshData = await fetchAndBuildTree();
@@ -281,6 +299,14 @@ async function processUpdate(update, data) {
       } catch (_) {}
     }
   }
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 async function longPoll() {
