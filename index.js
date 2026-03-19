@@ -241,9 +241,9 @@ function isStockCommand(text) {
 
 async function processUpdate(update, data) {
   const callback = update.callback_query;
-  const chatId = update.message?.chat?.id ?? callback?.message?.chat?.id;
+  const chatId = update.message?.chat?.id ?? update.channel_post?.chat?.id ?? callback?.message?.chat?.id;
   const messageId = callback?.message?.message_id;
-  const text = update.message?.text ?? callback?.data;
+  const text = update.message?.text ?? update.channel_post?.text ?? callback?.data;
 
   if (!chatId) return;
 
@@ -279,7 +279,7 @@ async function processUpdate(update, data) {
     }
   }
 
-  const msgText = (update.message?.text || '').trim();
+  const msgText = (update.message?.text || update.channel_post?.text || '').trim();
 
   const DEDICATED_TRIGGERS = [
     '还有独享吗', '独享机还有吗', '独享还有吗', '还有什么独享', '独享还有啥',
@@ -297,7 +297,7 @@ async function processUpdate(update, data) {
   if (msgText && DEDICATED_TRIGGERS.some((phrase) => normalized.includes(phrase))) {
     const dedicated = (data.tree && data.tree['独享机器']) || {};
     const hasStock = Object.values(dedicated).some((arr) => Array.isArray(arr) && arr.length > 0);
-    const replyToId = update.message?.message_id;
+    const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
     await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看', undefined, replyToId);
     return;
   }
@@ -309,7 +309,8 @@ async function processUpdate(update, data) {
         displayName = new URL(WEBSSH_URL).hostname;
       } catch (_) {}
       const linkHtml = `👉<b><a href="${escapeHtml(WEBSSH_URL)}">${escapeHtml(displayName)}</a></b>👈带文件管理的在线SSH工具`;
-      const replyToId = update.message?.message_id;
+      const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
+      console.log('[mofang-notice] 触发 webssh 回复, chatId=', chatId);
       await sendReply(chatId, linkHtml, undefined, replyToId);
     } catch (e) {
       console.error('[mofang-notice] webssh 回复失败', e.message);
