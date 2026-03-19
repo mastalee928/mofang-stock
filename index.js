@@ -15,6 +15,10 @@ const STOCK_MESSAGE_DELETE_AFTER_SECONDS = Math.max(0, Number(process.env.STOCK_
 const STOCK_CHAT_COOLDOWN_SECONDS = Math.max(0, Number(process.env.STOCK_CHAT_COOLDOWN_SECONDS) || 15);
 /** 官网/webssh/独享 等简单回复的聊天室冷却秒数（0 表示不限制） */
 const SIMPLE_REPLY_COOLDOWN_SECONDS = Math.max(0, Number(process.env.SIMPLE_REPLY_COOLDOWN_SECONDS) || 10);
+/** 代发到群：管理员 user id 列表（逗号分隔），仅这些人可用 /say、/发群 */
+const ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).map(Number));
+/** 代发目标：bot 代发消息发到这个群/频道（留空则关闭代发） */
+const ANNOUNCE_CHAT_ID = (process.env.TELEGRAM_ANNOUNCE_CHAT_ID || '').trim();
 
 let treeCache = { data: null, expiresAt: 0 };
 /** 按聊天室冷却：chatId -> 上次发送库存菜单的时间戳 */
@@ -361,6 +365,36 @@ async function processUpdate(update, data) {
   }
 
   const msgText = (update.message?.text || update.channel_post?.text || '').trim();
+
+  /** 代发仅允许私聊，避免在群里发 /say 被所有人看到指令和内容 */
+  if (ANNOUNCE_CHAT_ID && update.message?.from?.id && ADMIN_IDS.has(update.message.from.id)) {
+    const sayMatch = msgText.match(/^\/(say|发群)(@\w+)?\s*([\s\S]*)$/);
+    if (sayMatch) {
+      const isPrivate = update.message.chat?.type === 'private';
+      if (!isPrivate) {
+        await sendReply(
+          chatId,
+          '代发请<strong>私聊</strong>本机器人发送 <code>/say 内容</code>。群内不会代发；若你已在群里打出内容，他人可能已看到，请以后只在私聊发。',
+          undefined,
+          replyToId,
+        );
+        return;
+      }
+      const content = (sayMatch[3] || '').trim();
+      if (!content) {
+        await sendReply(chatId, '请写上要代发的内容，例如：/say 大家好', undefined, replyToId);
+        return;
+      }
+      try {
+        await sendReply(ANNOUNCE_CHAT_ID, content, undefined, undefined);
+        await sendReply(chatId, '已代发到群。', undefined, replyToId);
+      } catch (e) {
+        console.error('[mofang-notice] 代发失败', e.message);
+        await sendReply(chatId, `代发失败：${e.message}`, undefined, replyToId);
+      }
+      return;
+    }
+  }
 
   const DEDICATED_TRIGGERS = [
     '还有独享吗', '独享机还有吗', '独享还有吗', '还有什么独享', '独享还有啥',
