@@ -179,7 +179,7 @@ async function sendStockLevel1(chatId, messageId, data) {
   const header = parts.length ? parts.join('\n\n') + '\n\n' : '';
   const text = header + '请选择产品类型：';
   const keyboard = level1Order.length
-    ? [level1Order.map((name) => ({ text: name, callback_data: `L1:${name}` }))]
+    ? [level1Order.map((name) => ({ text: name, callback_data: `L1:${name}` })), [{ text: '◀ 返回', callback_data: 'back:L0' }]]
     : [];
   if (messageId) await editMessageText(chatId, messageId, text, keyboard);
   else await sendReply(chatId, text, keyboard);
@@ -197,6 +197,7 @@ async function sendStockLevel2(chatId, messageId, data, level1) {
     ? `请选择区域（${level1}）：`
     : `${level1} 下暂无可用库存。`;
   const keyboard = buttons.length ? buttons.map((b) => [b]) : [];
+  keyboard.push([{ text: '◀ 返回', callback_data: 'back:L1' }]);
   if (messageId) await editMessageText(chatId, messageId, text, keyboard);
   else await sendReply(chatId, text, keyboard);
 }
@@ -211,11 +212,13 @@ async function sendStockProducts(chatId, messageId, data, level1, level2) {
   const header = parts.length ? parts.join('\n\n') + '\n\n' : '';
   if (products.length === 0) {
     const text = header + `该分类下暂无可用库存。`;
-    if (messageId) await editMessageText(chatId, messageId, text, []);
-    else await sendReply(chatId, text);
+    const keyboard = [[{ text: '◀ 返回', callback_data: `back:L2:${level1}` }]];
+    if (messageId) await editMessageText(chatId, messageId, text, keyboard);
+    else await sendReply(chatId, text, keyboard);
     return;
   }
   const rows = buildProductRows(products);
+  rows.push([{ text: '◀ 返回', callback_data: `back:L2:${level1}` }]);
   const text = header + `${level1} · ${level2}\n共 ${products.length} 个有库存，点击跳转购买：`;
   if (messageId) await editMessageText(chatId, messageId, text, rows);
   else await sendReply(chatId, text, rows);
@@ -239,6 +242,21 @@ async function processUpdate(update, data) {
 
   if (callback?.data) {
     const d = callback.data;
+    if (d === 'back:L0') {
+      const parts = [NOTIFY_HEADER.trim() ? `<b>${NOTIFY_HEADER}</b>` : '', NOTIFY_SUBTITLE.trim()].filter((s) => String(s).trim() !== '');
+      const header = parts.length ? parts.join('\n\n') + '\n\n' : '';
+      await editMessageText(chatId, messageId, header + '发送 /stock 或 /库存 查看有库存商品。', []);
+      return;
+    }
+    if (d === 'back:L1') {
+      await sendStockLevel1(chatId, messageId, data);
+      return;
+    }
+    if (d.startsWith('back:L2:')) {
+      const level1 = d.slice(8); // "back:L2:OCI" -> "OCI"
+      await sendStockLevel2(chatId, messageId, data, level1);
+      return;
+    }
     if (d.startsWith('L1:')) {
       await sendStockLevel2(chatId, messageId, data, d.slice(3));
       return;
