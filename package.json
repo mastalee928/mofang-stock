@@ -1,7 +1,7 @@
 {
   "name": "mofang-notice",
   "version": "1.0.0",
-  "description": "魔方财务购物车库存监控，仅推送有库存商品至 Telegram",
+  "description": "魔方财务购物车库存 Bot，/stock 查有库存商品，一级二级从站点 /cart 解析",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
