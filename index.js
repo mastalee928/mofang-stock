@@ -11,8 +11,16 @@ const STOCK_ASKER_TTL_MS = Math.max(60, Number(process.env.STOCK_ASKER_TTL_SECON
 const STOCK_ASKER_MAX_SIZE = Math.max(100, Number(process.env.STOCK_ASKER_MAX_SIZE) || 2000);
 /** 库存键盘消息多少秒后自动删除（仅对新发出的那条消息），0 表示不自动删 */
 const STOCK_MESSAGE_DELETE_AFTER_SECONDS = Math.max(0, Number(process.env.STOCK_MESSAGE_DELETE_AFTER_SECONDS) || 900);
+/** 同一聊天室 N 秒内只发一条库存菜单，防刷屏（0 表示不限制） */
+const STOCK_CHAT_COOLDOWN_SECONDS = Math.max(0, Number(process.env.STOCK_CHAT_COOLDOWN_SECONDS) || 15);
+/** 官网/webssh/独享 等简单回复的聊天室冷却秒数（0 表示不限制） */
+const SIMPLE_REPLY_COOLDOWN_SECONDS = Math.max(0, Number(process.env.SIMPLE_REPLY_COOLDOWN_SECONDS) || 10);
 
 let treeCache = { data: null, expiresAt: 0 };
+/** 按聊天室冷却：chatId -> 上次发送库存菜单的时间戳 */
+const chatLastStockAt = new Map();
+/** 按聊天室冷却：官网/webssh/独享 上次回复时间戳 */
+const chatLastSimpleReplyAt = new Map();
 /** 群组内 /stock 键盘：key = `${chatId}:${messageId}`, value = { userId, at }，带 TTL 与容量上限 */
 const stockAskerMap = new Map();
 
@@ -47,6 +55,19 @@ function getCachedTree() {
 }
 function setCachedTree(data) {
   treeCache = { data, expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000 };
+}
+
+/** 检查官网/webssh/独享 冷却，若在冷却内返回剩余秒数，否则返回 null */
+function getSimpleReplyCooldownSec(chatId) {
+  if (SIMPLE_REPLY_COOLDOWN_SECONDS <= 0) return null;
+  const lastAt = chatLastSimpleReplyAt.get(chatId);
+  const now = Date.now();
+  if (lastAt != null && now - lastAt < SIMPLE_REPLY_COOLDOWN_SECONDS * 1000)
+    return Math.ceil((SIMPLE_REPLY_COOLDOWN_SECONDS * 1000 - (now - lastAt)) / 1000);
+  return null;
+}
+function setSimpleReplyCooldown(chatId) {
+  chatLastSimpleReplyAt.set(chatId, Date.now());
 }
 
 async function fetchCartHtml(query) {
@@ -355,13 +376,24 @@ async function processUpdate(update, data) {
   }
   const normalized = normalizeForTrigger(msgText);
   if (msgText && DEDICATED_TRIGGERS.some((phrase) => normalized.includes(phrase))) {
+    const sec = getSimpleReplyCooldownSec(chatId);
+    if (sec != null) {
+      await sendReply(chatId, `操作太频繁，请 ${sec} 秒后再试。`, undefined, replyToId);
+      return;
+    }
     const dedicated = (data.tree && data.tree['独享机器']) || {};
     const hasStock = Object.values(dedicated).some((arr) => Array.isArray(arr) && arr.length > 0);
     await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看', undefined, replyToId);
+    setSimpleReplyCooldown(chatId);
     return;
   }
 
   if (msgText && msgText.toLowerCase().includes('webssh')) {
+    const sec = getSimpleReplyCooldownSec(chatId);
+    if (sec != null) {
+      await sendReply(chatId, `操作太频繁，请 ${sec} 秒后再试。`, undefined, replyToId);
+      return;
+    }
     try {
       let displayName = 'webssh.oci.ee';
       try {
@@ -370,6 +402,7 @@ async function processUpdate(update, data) {
       const linkHtml = `👉<b><a href="${escapeHtml(WEBSSH_URL)}">${escapeHtml(displayName)}</a></b>👈带文件管理的在线SSH工具`;
       console.log('[mofang-notice] 触发 webssh 回复, chatId=', chatId);
       await sendReply(chatId, linkHtml, undefined, replyToId);
+      setSimpleReplyCooldown(chatId);
     } catch (e) {
       console.error('[mofang-notice] webssh 回复失败', e.message);
     }
@@ -377,6 +410,11 @@ async function processUpdate(update, data) {
   }
 
   if (msgText === '主页' || msgText === '官网') {
+    const sec = getSimpleReplyCooldownSec(chatId);
+    if (sec != null) {
+      await sendReply(chatId, `操作太频繁，请 ${sec} 秒后再试。`, undefined, replyToId);
+      return;
+    }
     try {
       const displayName = (() => {
         try {
@@ -387,6 +425,7 @@ async function processUpdate(update, data) {
       })();
       const linkHtml = `OCI官网是👉<b><a href="${escapeHtml(SITE_URL)}">${escapeHtml(displayName)}</a></b>👈`;
       await sendReply(chatId, linkHtml, undefined, replyToId);
+      setSimpleReplyCooldown(chatId);
     } catch (e) {
       console.error('[mofang-notice] 主页/官网回复失败', e.message);
     }
@@ -395,12 +434,22 @@ async function processUpdate(update, data) {
 
   if (isStockCommand(text)) {
     try {
+      if (STOCK_CHAT_COOLDOWN_SECONDS > 0 && messageId == null) {
+        const lastAt = chatLastStockAt.get(chatId);
+        const now = Date.now();
+        if (lastAt != null && now - lastAt < STOCK_CHAT_COOLDOWN_SECONDS * 1000) {
+          const sec = Math.ceil((STOCK_CHAT_COOLDOWN_SECONDS * 1000 - (now - lastAt)) / 1000);
+          await sendReply(chatId, `操作太频繁，请 ${sec} 秒后再试。`, undefined, replyToId);
+          return;
+        }
+      }
       let data = getCachedTree();
       if (!data) {
         data = await fetchAndBuildTree();
         setCachedTree(data);
       }
       const sentMessageId = await sendStockLevel1(chatId, messageId, data, replyToId);
+      if (sentMessageId != null) chatLastStockAt.set(chatId, Date.now());
       const askerUserId = update.message?.from?.id ?? update.channel_post?.from?.id;
       if (sentMessageId != null && askerUserId != null) setStockAsker(`${chatId}:${sentMessageId}`, askerUserId);
       if (sentMessageId != null && STOCK_MESSAGE_DELETE_AFTER_SECONDS > 0) {
