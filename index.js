@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const SITE_URL = (process.env.SITE_URL || 'https://oci.ee').replace(/\/$/, '');
+const WEBSSH_URL = (process.env.WEBSSH_URL || 'https://webssh.oci.ee').replace(/\/$/, '');
 const CART_URL = `${SITE_URL}/cart`;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const NOTIFY_HEADER = process.env.NOTIFY_HEADER || '魔方库存';
@@ -298,6 +299,21 @@ async function processUpdate(update, data) {
     const hasStock = Object.values(dedicated).some((arr) => Array.isArray(arr) && arr.length > 0);
     const replyToId = update.message?.message_id;
     await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看', undefined, replyToId);
+    return;
+  }
+
+  if (msgText && msgText.toLowerCase().includes('webssh')) {
+    try {
+      let displayName = 'webssh.oci.ee';
+      try {
+        displayName = new URL(WEBSSH_URL).hostname;
+      } catch (_) {}
+      const linkHtml = `👉<b><a href="${escapeHtml(WEBSSH_URL)}">${escapeHtml(displayName)}</a></b>👈带文件管理的在线SSH工具`;
+      const replyToId = update.message?.message_id;
+      await sendReply(chatId, linkHtml, undefined, replyToId);
+    } catch (e) {
+      console.error('[mofang-notice] webssh 回复失败', e.message);
+    }
     return;
   }
 
