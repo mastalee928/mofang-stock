@@ -29,10 +29,10 @@ function parseLevel1(html) {
   return list;
 }
 
-/** 从 cart?fid=X 页解析二级：可用区域/类型（gid + 名称），按 DOM 顺序 */
+/** 从 cart?fid=X 页解析二级：可用区域/类型（gid + 名称），按 DOM 顺序；链接可能在单引号内 */
 function parseLevel2(html, fid) {
   const list = [];
-  const re = new RegExp(`onclick="[^"]*\\/cart\\?fid=${fid}&gid=(\\d+)"[^>]*>[\s\S]*?yy-bth-text-a[^>]*>([^<]+)`, 'gi');
+  const re = new RegExp(`fid=${fid}&gid=(\\d+)[\\s'\"][\\s\\S]*?yy-bth-text-a[^>]*>([^<]+)`, 'gi');
   let m;
   while ((m = re.exec(html)) !== null) {
     const gid = m[1];
