@@ -5,6 +5,16 @@ const CART_URL = `${SITE_URL}/cart`;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const NOTIFY_HEADER = process.env.NOTIFY_HEADER || '魔方库存';
 const NOTIFY_SUBTITLE = process.env.NOTIFY_SUBTITLE || '';
+const CACHE_TTL_SECONDS = Math.max(30, Number(process.env.CACHE_TTL_SECONDS) || 60);
+
+let treeCache = { data: null, expiresAt: 0 };
+function getCachedTree() {
+  if (treeCache.data && Date.now() < treeCache.expiresAt) return treeCache.data;
+  return null;
+}
+function setCachedTree(data) {
+  treeCache = { data, expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000 };
+}
 
 async function fetchCartHtml(query) {
   const url = query ? `${CART_URL}${query.startsWith('?') ? query : '?' + query}` : CART_URL;
@@ -70,8 +80,8 @@ function parseProductsFromHtml(html) {
 }
 
 /**
- * 拉取 /cart，解析一级；对每个一级拉取 cart?fid=X 解析二级（顺序同站）；对每个二级拉取 cart?fid=X&gid=Y 解析商品。
- * 返回 { level1Order, level2Order, tree }，tree[level1Label][level2Label] = products
+ * 拉取 /cart 解析一级；并行拉取各 fid 页解析二级；并行拉取各 fid&gid 页解析商品。
+ * 返回 { level1Order, level2Order, tree }
  */
 async function fetchAndBuildTree() {
   const level1Order = [];
@@ -87,28 +97,25 @@ async function fetchAndBuildTree() {
   if (l1List.length === 0) {
     l1List = [{ fid: '1', label: 'OCI' }, { fid: '3', label: 'Special' }, { fid: '2', label: '独享机器' }];
   }
-  for (const { fid, label } of l1List) {
+  const html2List = await Promise.all(l1List.map(({ fid }) => fetchCartHtml(`fid=${fid}`).catch(() => '')));
+  const productFetches = [];
+  for (let i = 0; i < l1List.length; i++) {
+    const { fid, label } = l1List[i];
+    const html2 = html2List[i];
     level1Order.push(label);
     tree[label] = {};
     level2Order[label] = [];
-    let html2;
-    try {
-      html2 = await fetchCartHtml(`fid=${fid}`);
-    } catch (_) {
-      continue;
-    }
+    if (!html2) continue;
     const l2List = parseLevel2(html2, fid);
     for (const { query, label: l2Label } of l2List) {
       level2Order[label].push(l2Label);
-      let products;
-      try {
-        const html3 = await fetchCartHtml(query);
-        products = parseProductsFromHtml(html3);
-      } catch (_) {
-        products = [];
-      }
-      tree[label][l2Label] = products;
+      productFetches.push({ label, l2Label, query });
     }
+  }
+  const productHtmls = await Promise.all(productFetches.map(({ query }) => fetchCartHtml(query).catch(() => '')));
+  for (let i = 0; i < productFetches.length; i++) {
+    const { label, l2Label } = productFetches[i];
+    tree[label][l2Label] = parseProductsFromHtml(productHtmls[i] || '');
   }
   return { level1Order, level2Order, tree };
 }
@@ -271,6 +278,27 @@ async function processUpdate(update, data) {
   }
 
   const msgText = (update.message?.text || '').trim();
+
+  const DEDICATED_TRIGGERS = [
+    '还有独享吗', '独享机还有吗', '独享还有吗', '还有什么独享', '独享还有啥',
+    '独享机库存', '看看独享库存', '我要买独享机', '买独享机', '独享还有库存吗',
+    '库存还有独享没', '还有没有独享', '有没有独享机', '还有没有独享机',
+    '我想买独享机', '我想买独享',
+  ];
+  function normalizeForTrigger(t) {
+    return String(t)
+      .replace(/\s/g, '')
+      .replace(/[。，？！?！.．,，、；;：:""''（）()【】[]\s]/g, '')
+      .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '');
+  }
+  const normalized = normalizeForTrigger(msgText);
+  if (msgText && DEDICATED_TRIGGERS.some((phrase) => normalized.includes(phrase))) {
+    const dedicated = (data.tree && data.tree['独享机器']) || {};
+    const hasStock = Object.values(dedicated).some((arr) => Array.isArray(arr) && arr.length > 0);
+    await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看');
+    return;
+  }
+
   if (msgText === '主页' || msgText === '官网') {
     try {
       const displayName = (() => {
@@ -290,8 +318,12 @@ async function processUpdate(update, data) {
 
   if (isStockCommand(text)) {
     try {
-      const freshData = await fetchAndBuildTree();
-      await sendStockLevel1(chatId, messageId, freshData);
+      let data = getCachedTree();
+      if (!data) {
+        data = await fetchAndBuildTree();
+        setCachedTree(data);
+      }
+      await sendStockLevel1(chatId, messageId, data);
     } catch (e) {
       console.error('[mofang-notice] 回复失败', e.message);
       try {
@@ -324,8 +356,12 @@ async function longPoll() {
       const updates = data.result || [];
       for (const u of updates) {
         offset = u.update_id + 1;
-        const freshData = await fetchAndBuildTree();
-        await processUpdate(u, freshData);
+        let treeData = getCachedTree();
+        if (!treeData) {
+          treeData = await fetchAndBuildTree();
+          setCachedTree(treeData);
+        }
+        await processUpdate(u, treeData);
       }
     } catch (e) {
       console.error('[mofang-notice] longPoll', e.message);
