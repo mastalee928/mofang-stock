@@ -9,6 +9,8 @@ const NOTIFY_SUBTITLE = process.env.NOTIFY_SUBTITLE || '';
 const CACHE_TTL_SECONDS = Math.max(30, Number(process.env.CACHE_TTL_SECONDS) || 60);
 const STOCK_ASKER_TTL_MS = Math.max(60, Number(process.env.STOCK_ASKER_TTL_SECONDS) || 3600) * 1000;
 const STOCK_ASKER_MAX_SIZE = Math.max(100, Number(process.env.STOCK_ASKER_MAX_SIZE) || 2000);
+/** 库存键盘消息多少秒后自动删除（仅对新发出的那条消息），0 表示不自动删 */
+const STOCK_MESSAGE_DELETE_AFTER_SECONDS = Math.max(0, Number(process.env.STOCK_MESSAGE_DELETE_AFTER_SECONDS) || 900);
 
 let treeCache = { data: null, expiresAt: 0 };
 /** 群组内 /stock 键盘：key = `${chatId}:${messageId}`, value = { userId, at }，带 TTL 与容量上限 */
@@ -188,6 +190,17 @@ async function answerCallbackQuery(callbackQueryId, options = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+async function deleteMessage(chatId, messageId) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) console.warn('[mofang-notice] deleteMessage', data.description || res.status);
 }
 
 async function editMessageText(chatId, messageId, message, inlineKeyboard) {
@@ -388,6 +401,11 @@ async function processUpdate(update, data) {
       const sentMessageId = await sendStockLevel1(chatId, messageId, data, replyToId);
       const askerUserId = update.message?.from?.id ?? update.channel_post?.from?.id;
       if (sentMessageId != null && askerUserId != null) setStockAsker(`${chatId}:${sentMessageId}`, askerUserId);
+      if (sentMessageId != null && STOCK_MESSAGE_DELETE_AFTER_SECONDS > 0) {
+        const cid = chatId;
+        const mid = sentMessageId;
+        setTimeout(() => deleteMessage(cid, mid).catch(() => {}), STOCK_MESSAGE_DELETE_AFTER_SECONDS * 1000);
+      }
     } catch (e) {
       console.error('[mofang-notice] 回复失败', e.message);
       try {
