@@ -127,7 +127,7 @@ function buildProductRows(products) {
   });
 }
 
-async function sendReply(chatId, message, inlineKeyboard) {
+async function sendReply(chatId, message, inlineKeyboard, replyToMessageId) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
   const body = {
     chat_id: chatId,
@@ -135,6 +135,7 @@ async function sendReply(chatId, message, inlineKeyboard) {
     parse_mode: 'HTML',
     disable_web_page_preview: true,
   };
+  if (replyToMessageId) body.reply_to_message_id = replyToMessageId;
   if (inlineKeyboard && inlineKeyboard.length) {
     body.reply_markup = { inline_keyboard: inlineKeyboard };
   }
@@ -295,7 +296,8 @@ async function processUpdate(update, data) {
   if (msgText && DEDICATED_TRIGGERS.some((phrase) => normalized.includes(phrase))) {
     const dedicated = (data.tree && data.tree['独享机器']) || {};
     const hasStock = Object.values(dedicated).some((arr) => Array.isArray(arr) && arr.length > 0);
-    await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看');
+    const replyToId = update.message?.message_id;
+    await sendReply(chatId, hasStock ? '有。请发送 /stock 查看' : '没有。请发送 /stock 查看', undefined, replyToId);
     return;
   }
 
