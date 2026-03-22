@@ -19,6 +19,10 @@ const SIMPLE_REPLY_COOLDOWN_SECONDS = Math.max(0, Number(process.env.SIMPLE_REPL
 const ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).map(Number));
 /** 代发目标：bot 代发消息发到这个群/频道（留空则关闭代发） */
 const ANNOUNCE_CHAT_ID = (process.env.TELEGRAM_ANNOUNCE_CHAT_ID || '').trim();
+/** 群组内发送指定「退钱」动图时自动禁言秒数，0 关闭 */
+const RNM_AUTO_MUTE_SECONDS = Math.max(0, Number(process.env.RNM_AUTO_MUTE_SECONDS) || 9999);
+const RNM_MUTE_FILE_UNIQUE_ID = (process.env.RNM_MUTE_FILE_UNIQUE_ID || 'AgADDgQAAqdBFVE').trim();
+const RNM_MUTE_FILE_NAME = (process.env.RNM_MUTE_FILE_NAME || 'rnm-退钱.mp4').trim();
 
 let treeCache = { data: null, expiresAt: 0 };
 /** 按聊天室冷却：chatId -> 上次发送库存菜单的时间戳 */
@@ -228,6 +232,55 @@ async function deleteMessage(chatId, messageId) {
   if (!data.ok) console.warn('[mofang-notice] deleteMessage', data.description || res.status);
 }
 
+/** 是否为目标「退钱」MP4（file_unique_id 或指定文件名） */
+function isRnmTuiqianMuteMedia(msg) {
+  if (!msg || RNM_AUTO_MUTE_SECONDS <= 0) return false;
+  const anim = msg.animation;
+  const doc = msg.document;
+  const uid = RNM_MUTE_FILE_UNIQUE_ID;
+  if (uid && (anim?.file_unique_id === uid || doc?.file_unique_id === uid)) return true;
+  const videoNamed = (f) =>
+    f &&
+    RNM_MUTE_FILE_NAME &&
+    f.file_name === RNM_MUTE_FILE_NAME &&
+    String(f.mime_type || '').toLowerCase().includes('video');
+  if (videoNamed(anim) || videoNamed(doc)) return true;
+  return false;
+}
+
+async function restrictUserMuteSeconds(chatId, userId, seconds) {
+  const until = Math.floor(Date.now() / 1000) + seconds;
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/restrictChatMember`;
+  const permissions = {
+    can_send_messages: false,
+    can_send_audios: false,
+    can_send_documents: false,
+    can_send_photos: false,
+    can_send_videos: false,
+    can_send_video_notes: false,
+    can_send_voice_notes: false,
+    can_send_polls: false,
+    can_send_other_messages: false,
+    can_add_web_page_previews: false,
+    can_change_info: false,
+    can_invite_users: false,
+    can_pin_messages: false,
+    can_manage_topics: false,
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      user_id: userId,
+      permissions,
+      until_date: until,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) throw new Error(data.description || `HTTP ${res.status}`);
+}
+
 async function editMessageText(chatId, messageId, message, inlineKeyboard) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageText`;
   const body = {
@@ -322,6 +375,22 @@ async function processUpdate(update, data) {
   const replyToId = update.message?.message_id ?? update.channel_post?.message_id;
 
   if (!chatId) return;
+
+  if (
+    RNM_AUTO_MUTE_SECONDS > 0 &&
+    update.message &&
+    !update.message.from?.is_bot &&
+    (update.message.chat?.type === 'group' || update.message.chat?.type === 'supergroup') &&
+    isRnmTuiqianMuteMedia(update.message)
+  ) {
+    try {
+      await restrictUserMuteSeconds(chatId, update.message.from.id, RNM_AUTO_MUTE_SECONDS);
+      console.log('[mofang-notice] 退钱梗图禁言', chatId, update.message.from.id, `${RNM_AUTO_MUTE_SECONDS}s`);
+    } catch (e) {
+      console.warn('[mofang-notice] 退钱梗图禁言失败（需 Bot 为管理员并开启「限制成员」）', e.message);
+    }
+    return;
+  }
 
   if (callback?.data) {
     const key = `${chatId}:${messageId}`;
