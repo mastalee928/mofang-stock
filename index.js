@@ -24,6 +24,9 @@ const RNM_AUTO_MUTE_SECONDS = Math.max(0, Number(process.env.RNM_AUTO_MUTE_SECON
 const RNM_MUTE_FILE_UNIQUE_ID = (process.env.RNM_MUTE_FILE_UNIQUE_ID || 'AgADDgQAAqdBFVE').trim();
 const RNM_MUTE_FILE_NAME = (process.env.RNM_MUTE_FILE_NAME || 'rnm-退钱.mp4').trim();
 
+/** getMe 得到的 Bot 显示名，用于禁言提示文案「被管理员 xxx 禁言」 */
+let BOT_DISPLAY_NAME = '机器人';
+
 let treeCache = { data: null, expiresAt: 0 };
 /** 按聊天室冷却：chatId -> 上次发送库存菜单的时间戳 */
 const chatLastStockAt = new Map();
@@ -281,6 +284,74 @@ async function restrictUserMuteSeconds(chatId, userId, seconds) {
   if (!data.ok) throw new Error(data.description || `HTTP ${res.status}`);
 }
 
+function formatMuteDurationZh(totalSec) {
+  const n = Math.max(0, Math.floor(Number(totalSec) || 0));
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  return `${h} 小时 ${m} 分钟 ${s} 秒`;
+}
+
+async function refreshBotDisplayName() {
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe`);
+    const d = await r.json();
+    if (d.ok && d.result?.first_name) BOT_DISPLAY_NAME = d.result.first_name;
+  } catch (_) {}
+}
+
+async function isUserGroupAdmin(chatId, userId) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getChatMember?chat_id=${encodeURIComponent(
+    String(chatId),
+  )}&user_id=${userId}`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) return false;
+  const st = data.result?.status;
+  return st === 'creator' || st === 'administrator';
+}
+
+/** 解除禁言（恢复普通成员可发言） */
+async function liftUserMute(chatId, userId) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/restrictChatMember`;
+  const permissions = {
+    can_send_messages: true,
+    can_send_audios: true,
+    can_send_documents: true,
+    can_send_photos: true,
+    can_send_videos: true,
+    can_send_video_notes: true,
+    can_send_voice_notes: true,
+    can_send_polls: true,
+    can_send_other_messages: true,
+    can_add_web_page_previews: true,
+    can_change_info: false,
+    can_invite_users: true,
+    can_pin_messages: false,
+    can_manage_topics: false,
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, user_id: userId, permissions }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) throw new Error(data.description || `HTTP ${res.status}`);
+}
+
+/** 禁言成功后发一条类似 TG 管理提示的说明（引用违规消息） */
+async function sendRnmMuteNotice(chatId, replyToMessageId, mutedUserId, seconds) {
+  const dur = formatMuteDurationZh(seconds);
+  const text = `被管理员 <b>${escapeHtml(BOT_DISPLAY_NAME)}</b> 禁言 <b>${dur}</b>。`;
+  const keyboard = [
+    [
+      { text: '取消禁言', callback_data: `rnmu:${mutedUserId}` },
+      { text: '✅ 好', callback_data: 'rnmd' },
+    ],
+  ];
+  await sendReply(chatId, text, keyboard, replyToMessageId);
+}
+
 async function editMessageText(chatId, messageId, message, inlineKeyboard) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageText`;
   const body = {
@@ -376,6 +447,32 @@ async function processUpdate(update, data) {
 
   if (!chatId) return;
 
+  if (callback?.data === 'rnmd') {
+    await answerCallbackQuery(callback.id);
+    await deleteMessage(chatId, messageId);
+    return;
+  }
+  if (callback?.data?.startsWith('rnmu:')) {
+    const targetId = parseInt(callback.data.slice(5), 10);
+    if (!Number.isFinite(targetId)) {
+      await answerCallbackQuery(callback.id, { show_alert: true, text: '参数无效' });
+      return;
+    }
+    const admin = await isUserGroupAdmin(chatId, callback.from.id);
+    if (!admin) {
+      await answerCallbackQuery(callback.id, { show_alert: true, text: '仅管理员可取消禁言' });
+      return;
+    }
+    try {
+      await liftUserMute(chatId, targetId);
+      await answerCallbackQuery(callback.id, { text: '已取消禁言' });
+      await deleteMessage(chatId, messageId);
+    } catch (e) {
+      await answerCallbackQuery(callback.id, { show_alert: true, text: (e.message || '失败').slice(0, 200) });
+    }
+    return;
+  }
+
   if (
     RNM_AUTO_MUTE_SECONDS > 0 &&
     update.message &&
@@ -386,6 +483,11 @@ async function processUpdate(update, data) {
     try {
       await restrictUserMuteSeconds(chatId, update.message.from.id, RNM_AUTO_MUTE_SECONDS);
       console.log('[mofang-notice] 退钱梗图禁言', chatId, update.message.from.id, `${RNM_AUTO_MUTE_SECONDS}s`);
+      try {
+        await sendRnmMuteNotice(chatId, update.message.message_id, update.message.from.id, RNM_AUTO_MUTE_SECONDS);
+      } catch (e2) {
+        console.warn('[mofang-notice] 退钱梗图禁言提示发送失败', e2.message);
+      }
     } catch (e) {
       console.warn('[mofang-notice] 退钱梗图禁言失败（需 Bot 为管理员并开启「限制成员」）', e.message);
     }
@@ -653,6 +755,11 @@ async function main() {
   if (!TELEGRAM_BOT_TOKEN) {
     console.error('[mofang-notice] 请设置 TELEGRAM_BOT_TOKEN');
     process.exit(1);
+  }
+  try {
+    await refreshBotDisplayName();
+  } catch (e) {
+    console.warn('[mofang-notice] getMe 失败', e.message);
   }
   try {
     await setBotCommands();
